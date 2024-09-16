@@ -601,6 +601,9 @@ func GetDevpodInstance(
 		)
 	})
 
+	if len(result.Reservations) == 0 || len(result.Reservations[0].Instances) == 0 {
+		return Machine{}, nil
+	}
 	return NewMachineFromInstance(result.Reservations[0].Instances[0]), nil
 }
 
@@ -640,6 +643,9 @@ func GetDevpodStoppedInstance(
 		)
 	})
 
+	if len(result.Reservations) == 0 || len(result.Reservations[0].Instances) == 0 {
+		return Machine{}, nil
+	}
 	return NewMachineFromInstance(result.Reservations[0].Instances[0]), nil
 }
 
@@ -679,6 +685,9 @@ func GetDevpodRunningInstance(
 		)
 	})
 
+	if len(result.Reservations) == 0 || len(result.Reservations[0].Instances) == 0 {
+		return Machine{}, nil
+	}
 	return NewMachineFromInstance(result.Reservations[0].Instances[0]), nil
 }
 
