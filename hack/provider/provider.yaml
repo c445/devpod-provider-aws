@@ -24,6 +24,10 @@ optionGroups:
       - AWS_USE_SESSION_MANAGER
       - AWS_KMS_KEY_ARN_FOR_SESSION_MANAGER
       - AWS_ROUTE53_ZONE_NAME
+      - IDP_REDIRECT_URL
+      - IDP_CLIENT_ID
+      - IDP_CLIENT_SECRET
+      - IDP_AUTH_DOMAIN
     name: "AWS options"
     defaultVisible: false
   - options:
@@ -267,6 +271,18 @@ options:
   AGENT_PATH:
     description: The path where to inject the DevPod agent to.
     default: /var/lib/toolbox/devpod
+  IDP_REDIRECT_URL:
+    description: "Redirect URL"
+    default: ""
+  IDP_CLIENT_ID:
+    description: "Client ID"
+    default: ""
+  IDP_CLIENT_SECRET:
+    description: "Client Secret"
+    default: ""
+  IDP_AUTH_DOMAIN:
+    description: "Auth Domain"
+    default: ""
 agent:
   path: ${AGENT_PATH}
   inactivityTimeout: ${INACTIVITY_TIMEOUT}

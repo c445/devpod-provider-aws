@@ -23,6 +23,12 @@ var (
 	AWS_USE_SESSION_MANAGER             = "AWS_USE_SESSION_MANAGER"
 	AWS_KMS_KEY_ARN_FOR_SESSION_MANAGER = "AWS_KMS_KEY_ARN_FOR_SESSION_MANAGER"
 	AWS_ROUTE53_ZONE_NAME               = "AWS_ROUTE53_ZONE_NAME"
+	IDP_REDIRECT_URL                    = "IDP_REDIRECT_URL"
+	IDP_CLIENT_ID                       = "IDP_CLIENT_ID"
+	IDP_CLIENT_SECRET                   = "IDP_CLIENT_SECRET"
+	IDP_AUTH_DOMAIN                     = "IDP_AUTH_DOMAIN"
+	IDP_ASSUME_ROLE_URI                 = "IDP_ASSUME_ROLE_URI"
+	IDP_ROLES_URI                       = "IDP_ROLES_URI"
 )
 
 type Options struct {
@@ -44,6 +50,12 @@ type Options struct {
 	UseSessionManager          bool
 	KmsKeyARNForSessionManager string
 	Route53ZoneName            string
+	IdpRedirectURL             string
+	IdpClientID                string
+	IdpClientSecret            string
+	IdpAuthDomain              string
+	IdpAssumeRoleURI           string
+	IdpRolesURI                string
 }
 
 func FromEnv(init bool) (*Options, error) {
@@ -80,6 +92,13 @@ func FromEnv(init bool) (*Options, error) {
 	retOptions.UseSessionManager = os.Getenv(AWS_USE_SESSION_MANAGER) == "true"
 	retOptions.KmsKeyARNForSessionManager = os.Getenv(AWS_KMS_KEY_ARN_FOR_SESSION_MANAGER)
 	retOptions.Route53ZoneName = os.Getenv(AWS_ROUTE53_ZONE_NAME)
+
+	retOptions.IdpRedirectURL = os.Getenv(IDP_REDIRECT_URL)
+	retOptions.IdpClientID = os.Getenv(IDP_CLIENT_ID)
+	retOptions.IdpClientSecret = os.Getenv(IDP_CLIENT_SECRET)
+	retOptions.IdpAuthDomain = os.Getenv(IDP_AUTH_DOMAIN)
+	retOptions.IdpAssumeRoleURI = os.Getenv(IDP_ASSUME_ROLE_URI)
+	retOptions.IdpRolesURI = os.Getenv(IDP_ROLES_URI)
 
 	// Return eraly if we're just doing init
 	if init {

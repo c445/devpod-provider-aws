@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-
 	"github.com/loft-sh/devpod-provider-aws/pkg/aws"
 	"github.com/loft-sh/devpod/pkg/log"
 	"github.com/loft-sh/devpod/pkg/provider"
