@@ -48,6 +48,10 @@ func (cmd *InitCmd) Run(
 		return err
 	}
 
+	if err := aws.OIDC(config, log.Default, &cfg); err != nil {
+		return err
+	}
+
 	_, err = aws.GetDevpodRunningInstance(
 		ctx,
 		cfg,

@@ -101,6 +101,40 @@ func NewProvider(ctx context.Context, logs log.Logger) (*AwsProvider, error) {
 		return nil, err
 	}
 
+	if err := OIDC(config, logs, &cfg); err != nil {
+		return nil, err
+	}
+
+	isEC2 := isEC2Instance()
+
+	if config.DiskImage == "" && !isEC2 {
+		image, err := GetDefaultAMI(ctx, cfg, config.MachineType)
+		if err != nil {
+			return nil, err
+		}
+
+		config.DiskImage = image
+	}
+
+	if config.RootDevice == "" && !isEC2 {
+		device, err := GetAMIRootDevice(ctx, cfg, config.DiskImage)
+		if err != nil {
+			return nil, err
+		}
+		config.RootDevice = device
+	}
+
+	// create provider
+	provider := &AwsProvider{
+		Config:    config,
+		AwsConfig: cfg,
+		Log:       logs,
+	}
+
+	return provider, nil
+}
+
+func OIDC(config *options.Options, logs log.Logger, cfg *aws.Config) error {
 	// initialize the code verifier
 	var codeVerifier, _ = cv.CreateCodeVerifier()
 
@@ -188,11 +222,11 @@ func NewProvider(ctx context.Context, logs log.Logger) (*AwsProvider, error) {
 
 	state, err := randString(16)
 	if err != nil {
-		return nil, fmt.Errorf("Internal error: %w", err)
+		return fmt.Errorf("Internal error: %w", err)
 	}
 	nonce, err := randString(16)
 	if err != nil {
-		return nil, fmt.Errorf("Internal error: %w", err)
+		return fmt.Errorf("Internal error: %w", err)
 	}
 
 	// construct the authorization URL (with Auth0 as the authorization provider)
@@ -212,7 +246,7 @@ func NewProvider(ctx context.Context, logs log.Logger) (*AwsProvider, error) {
 
 	// open a browser window to the authorizationURL
 	if err := open.Start(authorizationURL); err != nil {
-		return nil, fmt.Errorf("idpCli: can't open browser to URL %s: %w", authorizationURL, err)
+		return fmt.Errorf("idpCli: can't open browser to URL %s: %w", authorizationURL, err)
 	}
 
 	// wait for the token
@@ -220,7 +254,7 @@ func NewProvider(ctx context.Context, logs log.Logger) (*AwsProvider, error) {
 
 	accounts, err := GetAwsRoles(config, t)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	roleID := ""
@@ -239,7 +273,7 @@ func NewProvider(ctx context.Context, logs log.Logger) (*AwsProvider, error) {
 
 	credentials, err := GetAwsAssumeRole(config, t, roleID)
 	if err != nil {
-		return nil, fmt.Errorf("idpCli: unable to get AWS credentials: %w", err)
+		return fmt.Errorf("idpCli: unable to get AWS credentials: %w", err)
 	}
 
 	cfg.Credentials = credentialProvider{creds: aws.Credentials{
@@ -249,34 +283,7 @@ func NewProvider(ctx context.Context, logs log.Logger) (*AwsProvider, error) {
 		Source:          "idpcli",
 		CanExpire:       false,
 	}}
-
-	isEC2 := isEC2Instance()
-
-	if config.DiskImage == "" && !isEC2 {
-		image, err := GetDefaultAMI(ctx, cfg, config.MachineType)
-		if err != nil {
-			return nil, err
-		}
-
-		config.DiskImage = image
-	}
-
-	if config.RootDevice == "" && !isEC2 {
-		device, err := GetAMIRootDevice(ctx, cfg, config.DiskImage)
-		if err != nil {
-			return nil, err
-		}
-		config.RootDevice = device
-	}
-
-	// create provider
-	provider := &AwsProvider{
-		Config:    config,
-		AwsConfig: cfg,
-		Log:       logs,
-	}
-
-	return provider, nil
+	return nil
 }
 
 type AwsProvider struct {
