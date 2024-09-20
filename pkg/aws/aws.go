@@ -9,7 +9,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/route53"
 	r53types "github.com/aws/aws-sdk-go-v2/service/route53/types"
 	"github.com/loft-sh/devpod/pkg/log"
-	"github.com/sirupsen/logrus"
 	"github.com/skratchdot/open-golang/open"
 	"io"
 	"io/ioutil"
@@ -175,8 +174,6 @@ func OIDC(config *options.Options, logs log.Logger, cfg *aws.Config) error {
 			}
 			return
 		}
-
-		logs.Printf(logrus.InfoLevel, "token: %q", t)
 		token <- t
 
 		// return an indication of success to the caller
