@@ -2,11 +2,21 @@ package aws
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"github.com/aws/aws-sdk-go-v2/service/route53"
 	r53types "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/loft-sh/devpod/pkg/log"
+	"github.com/sirupsen/logrus"
+	"github.com/skratchdot/open-golang/open"
+	"io"
+	"io/ioutil"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -19,8 +29,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/loft-sh/devpod-provider-aws/pkg/options"
 	"github.com/loft-sh/devpod/pkg/client"
-	"github.com/loft-sh/devpod/pkg/log"
 	"github.com/loft-sh/devpod/pkg/ssh"
+	cv "github.com/nirasan/go-oauth-pkce-code-verifier"
 	"github.com/pkg/errors"
 )
 
@@ -91,6 +101,155 @@ func NewProvider(ctx context.Context, logs log.Logger) (*AwsProvider, error) {
 		return nil, err
 	}
 
+	// initialize the code verifier
+	var codeVerifier, _ = cv.CreateCodeVerifier()
+
+	// start a web server to listen on a callback URL
+	server := &http.Server{Addr: config.IdpRedirectURL}
+
+	token := make(chan string)
+
+	// define a handler that will get the authorization code, call the token endpoint, and close the HTTP server
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			return
+		}
+
+		err := r.ParseForm()
+		if err != nil {
+			logs.Fatal(err)
+		}
+		// get the authorization code
+		code := r.PostForm.Get("code")
+		if code == "" {
+			fmt.Println("idpCli: Url Param 'code' is missing")
+			_, err := io.WriteString(w, "Error: could not find 'code' URL parameter\n")
+			if err != nil {
+				logs.Fatal(err)
+			}
+			return
+		}
+
+		// trade the authorization code and the code verifier for an access_token
+		codeVerifier := codeVerifier.String()
+		t, err := getAccessToken(config.IdpClientID, config.IdpClientSecret, codeVerifier, code, config.IdpRedirectURL, config.IdpAuthDomain)
+		if err != nil {
+			fmt.Println("idpCli: could not get access token")
+			_, err := io.WriteString(w, "Error: could not retrieve access token\n")
+			if err != nil {
+				logs.Fatal(err)
+			}
+			return
+		}
+
+		logs.Printf(logrus.InfoLevel, "token: %q", t)
+		token <- t
+
+		// return an indication of success to the caller
+		_, err = io.WriteString(w, `
+		<html>
+			<body>
+				<h1>Login successful!</h1>
+				<h2>You can close this window and return to the CLI.</h2>
+			</body>
+		</html>`)
+		if err != nil {
+			logs.Fatal(err)
+		}
+	})
+
+	// parse the redirect URL for the port number
+	u, err := url.Parse(config.IdpRedirectURL)
+	if err != nil {
+		fmt.Printf("idpCli: bad redirect URL: %s\n", err)
+		os.Exit(1)
+	}
+
+	// set up a listener on the redirect port
+	port := fmt.Sprintf(":%s", u.Port())
+	l, err := net.Listen("tcp", port)
+	if err != nil {
+		fmt.Printf("idpCli: can't listen to port %s: %s\n", port, err)
+		os.Exit(1)
+	}
+
+	go func() {
+		_ = server.Serve(l)
+	}()
+	defer func(server *http.Server) {
+		err := server.Close()
+		if err != nil {
+			logs.Fatal(err)
+		}
+	}(server)
+
+	// Create code_challenge with S256 method
+	codeChallenge := codeVerifier.CodeChallengeS256()
+
+	state, err := randString(16)
+	if err != nil {
+		return nil, fmt.Errorf("Internal error: %w", err)
+	}
+	nonce, err := randString(16)
+	if err != nil {
+		return nil, fmt.Errorf("Internal error: %w", err)
+	}
+
+	// construct the authorization URL (with Auth0 as the authorization provider)
+
+	authorizationURL := fmt.Sprintf(
+		"https://%s/connect/authorize?"+
+			"&scope=openid%%20profile%%20offline_access%%20daimler-aws-idp-logon-api%%20daimler-aws-idp-token-resource"+
+			"&response_type=code%%20id_token"+
+			"&client_id=%s"+
+			"&nonce=%s"+
+			"&state=%s"+
+			"&code_challenge=%s"+
+			"&code_challenge_method=S256"+
+			"&response_mode=form_post"+
+			"&redirect_uri=%s",
+		config.IdpAuthDomain, config.IdpClientID, nonce, state, codeChallenge, config.IdpRedirectURL)
+
+	// open a browser window to the authorizationURL
+	if err := open.Start(authorizationURL); err != nil {
+		return nil, fmt.Errorf("idpCli: can't open browser to URL %s: %w", authorizationURL, err)
+	}
+
+	// wait for the token
+	t := <-token
+
+	accounts, err := GetAwsRoles(config, t)
+	if err != nil {
+		return nil, err
+	}
+
+	roleID := ""
+	for _, account := range accounts {
+		if account.Id != "685166447833" {
+			continue
+		}
+
+		for _, role := range account.Roles {
+			if role.RoleName == "DhcFullAdmin" {
+				roleID = role.RoleId
+				break
+			}
+		}
+	}
+
+	credentials, err := GetAwsAssumeRole(config, t, roleID)
+	if err != nil {
+		return nil, fmt.Errorf("idpCli: unable to get AWS credentials: %w", err)
+	}
+
+	cfg.Credentials = credentialProvider{creds: aws.Credentials{
+		AccessKeyID:     credentials.AccessKey,
+		SecretAccessKey: credentials.SecretAccessKey,
+		SessionToken:    credentials.SessionToken,
+		Source:          "idpcli",
+		CanExpire:       false,
+	}}
+
 	isEC2 := isEC2Instance()
 
 	if config.DiskImage == "" && !isEC2 {
@@ -126,6 +285,16 @@ type AwsProvider struct {
 	Log              log.Logger
 	WorkingDirectory string
 }
+
+type credentialProvider struct {
+	creds aws.Credentials
+}
+
+func (c credentialProvider) Retrieve(ctx context.Context) (aws.Credentials, error) {
+	return c.creds, nil
+}
+
+var _ aws.CredentialsProvider = (*credentialProvider)(nil)
 
 func GetSubnetID(ctx context.Context, provider *AwsProvider) (string, error) {
 	svc := ec2.NewFromConfig(provider.AwsConfig)
@@ -1024,4 +1193,135 @@ chmod 0600 /home/devpod/.ssh/authorized_keys
 chown -R devpod:devpod /home/devpod`
 
 	return base64.StdEncoding.EncodeToString([]byte(resultScript)), nil
+}
+
+func getAccessToken(clientID string, clientSecret string, codeVerifier string, authorizationCode string, callbackURL string, authDomain string) (string, error) {
+	// set the url and form-encoded data for the POST to the access token endpoint
+	tokenUrl := "https://" + authDomain + "/connect/token"
+
+	data := fmt.Sprintf(
+		"grant_type=authorization_code"+
+			"&client_id=%s"+
+			"&code_verifier=%s"+
+			"&code=%s"+
+			"&redirect_uri=%s"+
+			"&client_secret=%s",
+		clientID, codeVerifier, authorizationCode, callbackURL, clientSecret)
+	payload := strings.NewReader(data)
+
+	// create the request and execute it
+	req, _ := http.NewRequest("POST", tokenUrl, payload)
+	req.Header.Add("content-type", "application/x-www-form-urlencoded")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("idpCli: HTTP error: %w", err)
+	}
+
+	// process the response
+	defer res.Body.Close()
+	body, _ := ioutil.ReadAll(res.Body)
+
+	// unmarshal the json into a string map
+	var responseData map[string]interface{}
+	err = json.Unmarshal(body, &responseData)
+	if err != nil {
+		return "", fmt.Errorf("idpCli: JSON error: %w", err)
+	}
+
+	return responseData["access_token"].(string), nil
+}
+
+func GetAwsAssumeRole(opts *options.Options, bearerToken string, roleId string) (Credentials, error) {
+	// create the request and execute it
+	data := "{\"RoleId\":\"" + roleId + "\",\"UseFallbackSessionDuration\":false}"
+	payload := strings.NewReader(data)
+
+	// create the request and execute it
+	req, _ := http.NewRequest("POST", opts.IdpAssumeRoleURI, payload)
+	req.Header.Add("Authorization", "Bearer "+bearerToken)
+	req.Header.Add("Content-Type", "application/json; charset=utf-8")
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return Credentials{}, fmt.Errorf("idpCli: HTTP error: %w", err)
+	}
+
+	// process the response
+	defer res.Body.Close()
+	body, _ := ioutil.ReadAll(res.Body)
+
+	credentials := Credentials{}
+	err = json.Unmarshal(body, &credentials)
+	if err != nil {
+		return Credentials{}, fmt.Errorf("idpCli: JSON error: %w", err)
+	}
+
+	return credentials, nil
+}
+
+func GetAwsRoles(opts *options.Options, bearerToken string) (AWSAccounts, error) {
+	results := AWSAccounts{}
+
+	// create the request and execute it
+	req, err := http.NewRequest("GET", opts.IdpRolesURI, nil)
+	req.Header.Add("Authorization", "Bearer "+bearerToken)
+	resp, _ := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Println("IdpCli: Error on response: ", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Println("IdpCli: Error while reading the response bytes: ", err)
+	}
+
+	// unmarshal the json into a string map
+	err = json.Unmarshal(body, &results)
+	if err != nil {
+		fmt.Printf("idpCli: JSON error: %s", err)
+		return results, err
+	}
+
+	return results, nil
+}
+
+func randString(nByte int) (string, error) {
+	b := make([]byte, nByte)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+type AWSAccounts []struct {
+	Description string  `json:"accountDescription"`
+	Id          string  `json:"accountId"`
+	Name        string  `json:"accountName"`
+	Roles       []Roles `json:"awsRoles"`
+}
+
+type Roles struct {
+	AssumeRoleDuration string `json:"assumeRoleDuration"`
+	RoleId             string `json:"roleId"`
+	RoleName           string `json:"roleName"`
+}
+
+type Credentials struct {
+	AccessKey           string              `json:"accessKey"`
+	SecretAccessKey     string              `json:"secretAccessKey"`
+	SessionToken        string              `json:"sessionToken"`
+	ErrorCode           string              `json:"errorCode"`
+	Status              string              `json:"status"`
+	Title               string              `json:"title"`
+	Message             string              `json:"message"`
+	TroubleShootingInfo TroubleShootingInfo `json:"troubleshootingInfo"`
+}
+
+type TroubleShootingInfo struct {
+	AccountID   string `json:"Account ID"`
+	AccountName string `json:"Account name"`
+	RoleName    string `json:"Role name"`
+	Timestamp   string `json:"Timestamp"`
+	UserID      string `json:"User ID"`
 }

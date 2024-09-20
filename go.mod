@@ -9,7 +9,9 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/iam v1.19.12
 	github.com/aws/aws-sdk-go-v2/service/route53 v1.28.3
 	github.com/loft-sh/devpod v0.0.3-0.20230512100016-aee23bbc9aad
+	github.com/nirasan/go-oauth-pkce-code-verifier v0.0.0-20220510032225-4f9f17eaec4c
 	github.com/pkg/errors v0.9.1
+	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
 	github.com/spf13/cobra v1.6.1
 	golang.org/x/crypto v0.17.0
 )
