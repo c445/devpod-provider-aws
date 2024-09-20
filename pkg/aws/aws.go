@@ -134,122 +134,135 @@ func NewProvider(ctx context.Context, logs log.Logger) (*AwsProvider, error) {
 }
 
 func OIDC(config *options.Options, logs log.Logger, cfg *aws.Config) error {
-	// initialize the code verifier
-	var codeVerifier, _ = cv.CreateCodeVerifier()
+	t := AccessToken{}
 
-	// start a web server to listen on a callback URL
-	server := &http.Server{Addr: config.IdpRedirectURL}
+	bytes, err := os.ReadFile(os.Getenv("HOME") + "/.token")
+	if err == nil {
+		json.Unmarshal(bytes, &t)
+	}
 
-	token := make(chan string)
+	if t.AccessToken == "" || t.Expires < time.Now().Unix()+600 {
 
-	// define a handler that will get the authorization code, call the token endpoint, and close the HTTP server
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			return
-		}
+		// initialize the code verifier
+		var codeVerifier, _ = cv.CreateCodeVerifier()
 
-		err := r.ParseForm()
-		if err != nil {
-			logs.Fatal(err)
-		}
-		// get the authorization code
-		code := r.PostForm.Get("code")
-		if code == "" {
-			fmt.Println("idpCli: Url Param 'code' is missing")
-			_, err := io.WriteString(w, "Error: could not find 'code' URL parameter\n")
+		// start a web server to listen on a callback URL
+		server := &http.Server{Addr: config.IdpRedirectURL}
+
+		token := make(chan AccessToken)
+
+		// define a handler that will get the authorization code, call the token endpoint, and close the HTTP server
+		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != "POST" {
+				return
+			}
+
+			err := r.ParseForm()
 			if err != nil {
 				logs.Fatal(err)
 			}
-			return
-		}
-
-		// trade the authorization code and the code verifier for an access_token
-		codeVerifier := codeVerifier.String()
-		t, err := getAccessToken(config.IdpClientID, config.IdpClientSecret, codeVerifier, code, config.IdpRedirectURL, config.IdpAuthDomain)
-		if err != nil {
-			fmt.Println("idpCli: could not get access token")
-			_, err := io.WriteString(w, "Error: could not retrieve access token\n")
-			if err != nil {
-				logs.Fatal(err)
+			// get the authorization code
+			code := r.PostForm.Get("code")
+			if code == "" {
+				fmt.Println("idpCli: Url Param 'code' is missing")
+				_, err := io.WriteString(w, "Error: could not find 'code' URL parameter\n")
+				if err != nil {
+					logs.Fatal(err)
+				}
+				return
 			}
-			return
-		}
-		token <- t
 
-		// return an indication of success to the caller
-		_, err = io.WriteString(w, `
+			// trade the authorization code and the code verifier for an access_token
+			codeVerifier := codeVerifier.String()
+			t, err := getAccessToken(config.IdpClientID, config.IdpClientSecret, codeVerifier, code, config.IdpRedirectURL, config.IdpAuthDomain)
+			if err != nil {
+				fmt.Println("idpCli: could not get access token")
+				_, err := io.WriteString(w, "Error: could not retrieve access token\n")
+				if err != nil {
+					logs.Fatal(err)
+				}
+				return
+			}
+			token <- t
+
+			// return an indication of success to the caller
+			_, err = io.WriteString(w, `
 		<html>
 			<body>
 				<h1>Login successful!</h1>
 				<h2>You can close this window and return to the CLI.</h2>
 			</body>
 		</html>`)
+			if err != nil {
+				logs.Fatal(err)
+			}
+		})
+
+		// parse the redirect URL for the port number
+		u, err := url.Parse(config.IdpRedirectURL)
 		if err != nil {
-			logs.Fatal(err)
+			fmt.Printf("idpCli: bad redirect URL: %s\n", err)
+			os.Exit(1)
 		}
-	})
 
-	// parse the redirect URL for the port number
-	u, err := url.Parse(config.IdpRedirectURL)
-	if err != nil {
-		fmt.Printf("idpCli: bad redirect URL: %s\n", err)
-		os.Exit(1)
-	}
-
-	// set up a listener on the redirect port
-	port := fmt.Sprintf(":%s", u.Port())
-	l, err := net.Listen("tcp", port)
-	if err != nil {
-		fmt.Printf("idpCli: can't listen to port %s: %s\n", port, err)
-		os.Exit(1)
-	}
-
-	go func() {
-		_ = server.Serve(l)
-	}()
-	defer func(server *http.Server) {
-		err := server.Close()
+		// set up a listener on the redirect port
+		port := fmt.Sprintf(":%s", u.Port())
+		l, err := net.Listen("tcp", port)
 		if err != nil {
-			logs.Fatal(err)
+			fmt.Printf("idpCli: can't listen to port %s: %s\n", port, err)
+			os.Exit(1)
 		}
-	}(server)
 
-	// Create code_challenge with S256 method
-	codeChallenge := codeVerifier.CodeChallengeS256()
+		go func() {
+			_ = server.Serve(l)
+		}()
+		defer func(server *http.Server) {
+			err := server.Close()
+			if err != nil {
+				logs.Fatal(err)
+			}
+		}(server)
 
-	state, err := randString(16)
-	if err != nil {
-		return fmt.Errorf("Internal error: %w", err)
+		// Create code_challenge with S256 method
+		codeChallenge := codeVerifier.CodeChallengeS256()
+
+		state, err := randString(16)
+		if err != nil {
+			return fmt.Errorf("Internal error: %w", err)
+		}
+		nonce, err := randString(16)
+		if err != nil {
+			return fmt.Errorf("Internal error: %w", err)
+		}
+
+		// construct the authorization URL (with Auth0 as the authorization provider)
+
+		authorizationURL := fmt.Sprintf(
+			"https://%s/connect/authorize?"+
+				"&scope=openid%%20profile%%20offline_access%%20daimler-aws-idp-logon-api%%20daimler-aws-idp-token-resource"+
+				"&response_type=code%%20id_token"+
+				"&client_id=%s"+
+				"&nonce=%s"+
+				"&state=%s"+
+				"&code_challenge=%s"+
+				"&code_challenge_method=S256"+
+				"&response_mode=form_post"+
+				"&redirect_uri=%s",
+			config.IdpAuthDomain, config.IdpClientID, nonce, state, codeChallenge, config.IdpRedirectURL)
+
+		// open a browser window to the authorizationURL
+		if err := open.Start(authorizationURL); err != nil {
+			return fmt.Errorf("idpCli: can't open browser to URL %s: %w", authorizationURL, err)
+		}
+
+		// wait for the token
+		t = <-token
+
+		file, _ := json.MarshalIndent(t, "", "  ")
+		_ = os.WriteFile(os.Getenv("HOME")+"/.token", file, 0600)
 	}
-	nonce, err := randString(16)
-	if err != nil {
-		return fmt.Errorf("Internal error: %w", err)
-	}
 
-	// construct the authorization URL (with Auth0 as the authorization provider)
-
-	authorizationURL := fmt.Sprintf(
-		"https://%s/connect/authorize?"+
-			"&scope=openid%%20profile%%20offline_access%%20daimler-aws-idp-logon-api%%20daimler-aws-idp-token-resource"+
-			"&response_type=code%%20id_token"+
-			"&client_id=%s"+
-			"&nonce=%s"+
-			"&state=%s"+
-			"&code_challenge=%s"+
-			"&code_challenge_method=S256"+
-			"&response_mode=form_post"+
-			"&redirect_uri=%s",
-		config.IdpAuthDomain, config.IdpClientID, nonce, state, codeChallenge, config.IdpRedirectURL)
-
-	// open a browser window to the authorizationURL
-	if err := open.Start(authorizationURL); err != nil {
-		return fmt.Errorf("idpCli: can't open browser to URL %s: %w", authorizationURL, err)
-	}
-
-	// wait for the token
-	t := <-token
-
-	accounts, err := GetAwsRoles(config, t)
+	accounts, err := GetAwsRoles(config, t.AccessToken)
 	if err != nil {
 		return err
 	}
@@ -268,7 +281,7 @@ func OIDC(config *options.Options, logs log.Logger, cfg *aws.Config) error {
 		}
 	}
 
-	credentials, err := GetAwsAssumeRole(config, t, roleID)
+	credentials, err := GetAwsAssumeRole(config, t.AccessToken, roleID)
 	if err != nil {
 		return fmt.Errorf("idpCli: unable to get AWS credentials: %w", err)
 	}
@@ -1199,7 +1212,12 @@ chown -R devpod:devpod /home/devpod`
 	return base64.StdEncoding.EncodeToString([]byte(resultScript)), nil
 }
 
-func getAccessToken(clientID string, clientSecret string, codeVerifier string, authorizationCode string, callbackURL string, authDomain string) (string, error) {
+type AccessToken struct {
+	AccessToken string `json:"access_token"`
+	Expires     int64  `json:"expires_in"`
+}
+
+func getAccessToken(clientID string, clientSecret string, codeVerifier string, authorizationCode string, callbackURL string, authDomain string) (AccessToken, error) {
 	// set the url and form-encoded data for the POST to the access token endpoint
 	tokenUrl := "https://" + authDomain + "/connect/token"
 
@@ -1218,7 +1236,7 @@ func getAccessToken(clientID string, clientSecret string, codeVerifier string, a
 	req.Header.Add("content-type", "application/x-www-form-urlencoded")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("idpCli: HTTP error: %w", err)
+		return AccessToken{}, fmt.Errorf("idpCli: HTTP error: %w", err)
 	}
 
 	// process the response
@@ -1229,10 +1247,15 @@ func getAccessToken(clientID string, clientSecret string, codeVerifier string, a
 	var responseData map[string]interface{}
 	err = json.Unmarshal(body, &responseData)
 	if err != nil {
-		return "", fmt.Errorf("idpCli: JSON error: %w", err)
+		return AccessToken{}, fmt.Errorf("idpCli: JSON error: %w", err)
 	}
 
-	return responseData["access_token"].(string), nil
+	ttl := responseData["expires_in"].(float64)
+
+	return AccessToken{
+		AccessToken: responseData["access_token"].(string),
+		Expires:     time.Now().Unix() + int64(ttl),
+	}, nil
 }
 
 func GetAwsAssumeRole(opts *options.Options, bearerToken string, roleId string) (Credentials, error) {
