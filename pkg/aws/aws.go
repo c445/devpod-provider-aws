@@ -269,7 +269,7 @@ func OIDC(config *options.Options, logs log.Logger, cfg *aws.Config) error {
 
 	roleID := ""
 	for _, account := range accounts {
-		if account.Id != "685166447833" {
+		if account.Id != config.AccountID {
 			continue
 		}
 
