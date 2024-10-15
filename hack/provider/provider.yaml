@@ -34,6 +34,10 @@ optionGroups:
       - INJECT_GIT_CREDENTIALS
     name: "Agent options"
     defaultVisible: false
+  - options:
+      - CUSTOM_AWS_CREDENTIAL_COMMAND
+    name: "Credential handling options"
+    defaultVisible: true
 options:
   AWS_REGION:
     suggestions:
@@ -272,6 +276,9 @@ options:
   AGENT_PATH:
     description: The path where to inject the DevPod agent to.
     default: /var/lib/toolbox/devpod
+  CUSTOM_AWS_CREDENTIAL_COMMAND:
+    description: Shell command which is executed to get the AWS credentials. The command must return a json containing the keys `aws_access_key_id` (required), `aws_secret_access_key` (required), `aws_session_token` (optional) and `aws_security_token` (optional).
+    default: ""
 agent:
   path: ${AGENT_PATH}
   inactivityTimeout: ${INACTIVITY_TIMEOUT}
